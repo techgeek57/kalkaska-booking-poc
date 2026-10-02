@@ -1,0 +1,795 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Proof-of-concept booking assistant for Kalkaska RV Park & Campground, sites F1-F10.">
+<title>Pull-Through Booking — Kalkaska RV Park POC</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,500;0,700;1,500&family=Work+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap">
+<style>
+  /* Layout concept: top app bar with role switch; camper role = chat + site reference rail;
+     owner role = pending queue + confirmed ledger. Single page, no scroll-jank, phone-safe. */
+  :root{
+    --ink:#1C2B22; --ink-soft:#4B5A4F;
+    --paper:#F3EFE2; --surface:#FFFFFF; --surface-sunk:#EAE4D2;
+    --pine:#2F5D45; --pine-ink:#1F3A2E; --pine-soft:#DCE6DE;
+    --amber:#C97B21; --amber-soft:#F3DDB8;
+    --rust:#A6432A; --rust-soft:#F0D6CC;
+    --line:#D8D0B8;
+    --font-display:'Fraunces',Georgia,'Times New Roman',serif;
+    --font-body:'Work Sans',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+    --font-mono:'IBM Plex Mono','SF Mono',Consolas,monospace;
+    color-scheme:light;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --ink:#ECE7D6; --ink-soft:#B7BFB4;
+      --paper:#131A14; --surface:#1B241C; --surface-sunk:#111712;
+      --pine:#6FA586; --pine-ink:#8FC2A4; --pine-soft:#223029;
+      --amber:#E3A24C; --amber-soft:#3A2C17;
+      --rust:#E0836A; --rust-soft:#3A2420;
+      --line:#2B3A2E;
+      color-scheme:dark;
+    }
+  }
+  :root[data-theme="dark"]{
+    --ink:#ECE7D6; --ink-soft:#B7BFB4;
+    --paper:#131A14; --surface:#1B241C; --surface-sunk:#111712;
+    --pine:#6FA586; --pine-ink:#8FC2A4; --pine-soft:#223029;
+    --amber:#E3A24C; --amber-soft:#3A2C17;
+    --rust:#E0836A; --rust-soft:#3A2420;
+    --line:#2B3A2E;
+    color-scheme:dark;
+  }
+  *{box-sizing:border-box;}
+  body{background:var(--paper);color:var(--ink);font-family:var(--font-body);margin:0;line-height:1.5;}
+  h1,h2,h3{font-family:var(--font-display);font-weight:700;letter-spacing:-0.01em;text-wrap:balance;margin:0;}
+  .num{font-family:var(--font-mono);font-variant-numeric:tabular-nums;}
+  a{color:var(--pine);}
+  button{font-family:inherit;}
+
+  .shell{min-height:100%;display:flex;flex-direction:column;}
+
+  /* App bar */
+  .appbar{
+    background:var(--pine-ink);color:#F7F3E6;
+    padding:14px 20px;padding-top:calc(14px + env(safe-area-inset-top,0px));
+    display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;
+  }
+  .brand{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;}
+  .brand h1{font-size:1.25rem;color:#F7F3E6;}
+  .brand .tag{font-size:0.68rem;text-transform:uppercase;letter-spacing:.09em;color:var(--amber-soft);
+    background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.2);padding:3px 8px;border-radius:99px;}
+  .roleswitch{display:flex;background:rgba(0,0,0,0.2);border-radius:99px;padding:3px;gap:2px;}
+  .roleswitch button{
+    border:none;background:transparent;color:#D9E3DA;padding:7px 14px;border-radius:99px;
+    font-size:0.85rem;font-weight:600;cursor:pointer;transition:background .15s,color .15s;
+  }
+  .roleswitch button.active{background:var(--amber);color:#2A1C08;}
+
+  main{flex:1;max-width:1180px;width:100%;margin:0 auto;padding:20px;padding-block:20px;}
+  @media (max-width:860px){ main{padding:14px;} }
+
+  /* ---- Camper view ---- */
+  .camper-grid{display:grid;grid-template-columns:1.3fr 1fr;gap:18px;align-items:start;}
+  @media (max-width:860px){ .camper-grid{grid-template-columns:1fr;} }
+
+  .panel{background:var(--surface);border:1px solid var(--line);border-radius:14px;overflow:hidden;}
+  .panel-head{padding:14px 18px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:10px;}
+  .panel-head h2{font-size:1.02rem;}
+  .panel-head p{margin:2px 0 0;font-size:0.82rem;color:var(--ink-soft);}
+
+  .chatlog{padding:16px 18px;display:flex;flex-direction:column;gap:12px;min-height:360px;max-height:58vh;overflow-y:auto;}
+  .msg{max-width:88%;padding:11px 14px;border-radius:12px;font-size:0.92rem;}
+  .msg.assistant{background:var(--surface-sunk);align-self:flex-start;border-bottom-left-radius:3px;}
+  .msg.user{background:var(--pine);color:#F7F3E6;align-self:flex-end;border-bottom-right-radius:3px;}
+  .msg p{margin:0 0 8px;}
+  .msg p:last-child{margin-bottom:0;}
+  .msg ul{margin:6px 0;padding-left:18px;}
+
+  .resultcards{display:flex;flex-direction:column;gap:8px;margin-top:8px;}
+  .resultcard{border:1px solid var(--line);background:var(--surface);border-radius:10px;padding:10px 12px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;color:var(--ink);}
+  .resultcard .site-id{font-family:var(--font-mono);font-weight:700;background:var(--pine-soft);color:var(--pine-ink);padding:3px 9px;border-radius:7px;font-size:0.85rem;}
+  .resultcard .meta{font-size:0.78rem;color:var(--ink-soft);}
+  .btn{border:none;border-radius:8px;padding:8px 14px;font-weight:600;font-size:0.84rem;cursor:pointer;transition:filter .12s,transform .05s;}
+  .btn:active{transform:translateY(1px);}
+  .btn-amber{background:var(--amber);color:#2A1C08;}
+  .btn-pine{background:var(--pine);color:#F7F3E6;}
+  .btn-ghost{background:transparent;border:1px solid var(--line);color:var(--ink);}
+  .btn-rust{background:var(--rust);color:#FCEEE8;}
+  .btn:hover{filter:brightness(1.07);}
+  .btn:disabled{opacity:.5;cursor:default;}
+
+  .chips{display:flex;gap:7px;flex-wrap:wrap;padding:0 18px 12px;}
+  .chip{border:1px dashed var(--line);background:transparent;color:var(--ink-soft);border-radius:99px;padding:6px 12px;font-size:0.78rem;cursor:pointer;}
+  .chip:hover{border-color:var(--pine);color:var(--pine);}
+
+  .composer{display:flex;gap:8px;padding:14px 18px;border-top:1px solid var(--line);}
+  .composer input{flex:1;border:1px solid var(--line);background:var(--paper);color:var(--ink);border-radius:9px;padding:10px 12px;font-size:0.9rem;font-family:inherit;}
+  .composer input:focus{outline:2px solid var(--pine);outline-offset:1px;}
+
+  .reqform{margin-top:8px;border:1px solid var(--line);border-radius:10px;padding:12px;background:var(--paper);display:grid;gap:8px;}
+  .reqform label{font-size:0.75rem;color:var(--ink-soft);display:block;margin-bottom:3px;}
+  .reqform input{width:100%;border:1px solid var(--line);background:var(--surface);color:var(--ink);border-radius:7px;padding:7px 9px;font-size:0.86rem;font-family:inherit;}
+  .reqform .row{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
+  .reqform .actions{display:flex;gap:8px;margin-top:2px;}
+
+  /* site reference rail */
+  .sitegrid{padding:14px 16px;display:grid;grid-template-columns:repeat(2,1fr);gap:9px;}
+  .sitecard{border:1px solid var(--line);border-radius:10px;padding:10px 11px;background:var(--surface);}
+  .sitecard .sc-top{display:flex;align-items:center;justify-content:space-between;}
+  .sitecard .sc-id{font-family:var(--font-mono);font-weight:700;font-size:1.0rem;}
+  .badge{font-size:0.62rem;text-transform:uppercase;letter-spacing:.06em;padding:2px 7px;border-radius:99px;font-weight:700;}
+  .badge-year{background:var(--amber-soft);color:var(--amber);}
+  .badge-pt{background:var(--pine-soft);color:var(--pine);}
+  .sitecard .sc-meta{margin-top:6px;font-size:0.73rem;color:var(--ink-soft);line-height:1.45;}
+
+  .rulesnote{padding:12px 16px;font-size:0.78rem;color:var(--ink-soft);border-top:1px solid var(--line);background:var(--surface-sunk);}
+  .rulesnote strong{color:var(--ink);}
+
+  /* ---- Owner view ---- */
+  .ownerstats{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px;}
+  @media (max-width:640px){ .ownerstats{grid-template-columns:1fr;} }
+  .stat{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:14px 16px;}
+  .stat .stat-n{font-family:var(--font-display);font-size:1.9rem;font-weight:700;}
+  .stat .stat-l{font-size:0.78rem;color:var(--ink-soft);margin-top:2px;}
+
+  .reassure{display:flex;gap:10px;align-items:flex-start;background:var(--pine-soft);border:1px solid var(--pine);border-radius:12px;padding:12px 14px;margin-bottom:16px;}
+  .reassure strong{display:block;color:var(--pine-ink);font-size:0.9rem;}
+  .reassure span{font-size:0.82rem;color:var(--ink-soft);}
+  :root[data-theme="dark"] .reassure span, @media (prefers-color-scheme:dark){ .reassure span{color:#C9D3C9;} }
+
+  .queue{display:flex;flex-direction:column;gap:10px;}
+  .reqcard{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:14px 16px;}
+  .reqcard-top{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;flex-wrap:wrap;}
+  .reqcard-site{display:flex;align-items:center;gap:8px;}
+  .reqcard-site .site-id{font-family:var(--font-mono);font-weight:700;background:var(--pine-soft);color:var(--pine-ink);padding:3px 10px;border-radius:7px;}
+  .reqcard-when{font-size:0.78rem;color:var(--ink-soft);}
+  .reqcard-detail{margin-top:8px;font-size:0.85rem;}
+  .reqcard-detail .dl{display:grid;grid-template-columns:auto 1fr;gap:3px 10px;font-size:0.83rem;}
+  .reqcard-detail .dl dt{color:var(--ink-soft);}
+  .reqcard-detail .dl dd{margin:0;}
+  .reqcard-actions{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;}
+  .declinebox{margin-top:8px;display:flex;gap:8px;}
+  .declinebox input{flex:1;border:1px solid var(--line);background:var(--paper);border-radius:7px;padding:7px 9px;font-size:0.83rem;color:var(--ink);font-family:inherit;}
+
+  .empty{padding:28px 16px;text-align:center;color:var(--ink-soft);font-size:0.88rem;}
+
+  table.ledger{width:100%;border-collapse:collapse;font-size:0.84rem;}
+  table.ledger th{text-align:left;font-size:0.72rem;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-soft);padding:8px 10px;border-bottom:1px solid var(--line);}
+  table.ledger td{padding:9px 10px;border-bottom:1px solid var(--line);}
+  table.ledger tr:last-child td{border-bottom:none;}
+  .status-pill{font-size:0.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.04em;padding:3px 8px;border-radius:99px;}
+  .status-confirmed{background:var(--pine-soft);color:var(--pine);}
+  .status-declined{background:var(--rust-soft);color:var(--rust);}
+  .tablewrap{overflow-x:auto;}
+
+  details.how{margin-top:20px;border:1px solid var(--line);border-radius:12px;background:var(--surface);}
+  details.how summary{padding:12px 16px;cursor:pointer;font-weight:600;font-size:0.88rem;}
+  details.how .how-body{padding:0 16px 16px;font-size:0.83rem;color:var(--ink-soft);display:grid;gap:8px;}
+  details.how .how-body strong{color:var(--ink);}
+
+  .footerbar{display:flex;justify-content:center;padding:18px;}
+  .reset-link{font-size:0.75rem;color:var(--ink-soft);background:none;border:none;text-decoration:underline;cursor:pointer;}
+
+  .toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:var(--pine-ink);color:#F7F3E6;padding:10px 18px;border-radius:99px;font-size:0.84rem;box-shadow:0 6px 20px rgba(0,0,0,.25);opacity:0;pointer-events:none;transition:opacity .2s,transform .2s;z-index:50;}
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(-4px);}
+</style>
+</head>
+<body>
+<div class="shell">
+  <div class="appbar">
+    <div class="brand">
+      <h1>Kalkaska RV Park — Booking Assistant</h1>
+      <span class="tag">Proof of concept · F1&ndash;F10</span>
+    </div>
+    <div class="roleswitch" role="tablist" aria-label="View as">
+      <button id="btn-role-camper" class="active" onclick="setRole('camper')">I'm a camper</button>
+      <button id="btn-role-owner" onclick="setRole('owner')">Joe — owner view</button>
+    </div>
+  </div>
+
+  <main>
+    <div id="view-camper"></div>
+    <div id="view-owner" hidden></div>
+  </main>
+
+  <div class="footerbar">
+    <button class="reset-link" onclick="resetDemo()">Reset demo data</button>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+
+<script>
+(function(){
+  "use strict";
+
+  /* ---------------------------------------------------------------
+     DATA MODEL
+  --------------------------------------------------------------- */
+  var SEASON = { startMonth:5, startDay:1, endMonth:11, endDay:15 }; // May 1 – Nov 15
+  var TODAY = new Date(); TODAY.setHours(0,0,0,0);
+
+  var SITES = [
+    {id:'F1',  yearRound:false},
+    {id:'F2',  yearRound:false},
+    {id:'F3',  yearRound:false},
+    {id:'F4',  yearRound:false},
+    {id:'F5',  yearRound:false},
+    {id:'F6',  yearRound:true},
+    {id:'F7',  yearRound:false},
+    {id:'F8',  yearRound:false},
+    {id:'F9',  yearRound:true},
+    {id:'F10', yearRound:false},
+  ];
+  var SITE_SPEC = { maxLength:50, hookup:'full', amps:[30,50], pullThrough:true };
+
+  function siteById(id){ for(var i=0;i<SITES.length;i++){ if(SITES[i].id===id) return SITES[i]; } return null; }
+
+  function seedReservations(){
+    var y1 = nextYear(), y2 = y1 + 1;
+    return [
+      {id:'r1', site:'F3', start:new Date(y1,6,1), end:new Date(y1,6,6),  guest:'Marsh family',   rig:'Fifth wheel, 34’',   amp:50, status:'confirmed', source:'office'},
+      {id:'r2', site:'F1', start:new Date(y1,6,8), end:new Date(y1,6,15), guest:'T. Okafor',       rig:'Travel trailer, 28’',amp:30, status:'confirmed', source:'office'},
+      {id:'r3', site:'F7', start:new Date(y1,9,10),end:new Date(y1,9,14), guest:'Holloway party',  rig:'Motorhome (Class A)',    amp:50, status:'confirmed', source:'office'},
+      {id:'r4', site:'F10',start:new Date(y1,10,1),end:new Date(y1,10,5),guest:'D. Vance',         rig:'Toy hauler, 36’',   amp:50, status:'confirmed', source:'office'},
+      {id:'r5', site:'F6', start:new Date(y1,0,1), end:new Date(y2,0,1), guest:'Reyes (year-round)',rig:'Park model trailer',    amp:50, status:'confirmed', source:'office', longterm:true},
+      {id:'r6', site:'F9', start:new Date(y1,0,1), end:new Date(y2,0,1), guest:'Whitfield (year-round)',rig:'Fifth wheel',        amp:50, status:'confirmed', source:'office', longterm:true},
+    ];
+  }
+
+  function nextYear(){
+    // If this year's season has already ended, default demo dates to next year so examples land in-season.
+    var endThisYear = new Date(TODAY.getFullYear(), SEASON.endMonth-1, SEASON.endDay);
+    return TODAY > endThisYear ? TODAY.getFullYear()+1 : TODAY.getFullYear();
+  }
+
+  var STORE_KEY = 'kalkaska-poc-v2';
+  var RES = [];
+  var PENDING_SEQ = 100;
+
+  function loadState(){
+    try{
+      var raw = localStorage.getItem(STORE_KEY);
+      if(raw){
+        var parsed = JSON.parse(raw);
+        RES = parsed.map(function(r){
+          return Object.assign({}, r, { start:new Date(r.start), end:new Date(r.end) });
+        });
+        return;
+      }
+    }catch(e){}
+    RES = seedReservations();
+    saveState();
+  }
+  function saveState(){
+    try{
+      localStorage.setItem(STORE_KEY, JSON.stringify(RES));
+    }catch(e){}
+  }
+  window.resetDemo = function(){
+    RES = seedReservations();
+    saveState();
+    renderOwner();
+    toast('Demo data reset to the original sample bookings.');
+  };
+
+  /* ---------------------------------------------------------------
+     DATE HELPERS
+  --------------------------------------------------------------- */
+  var MONTHS = {jan:0,january:0,feb:1,february:1,mar:2,march:2,apr:3,april:3,may:4,jun:5,june:5,
+    jul:6,july:6,aug:7,august:7,sep:8,sept:8,september:8,oct:9,october:9,nov:10,november:10,dec:11,december:11};
+
+  function fmtDate(d){
+    return d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
+  }
+  function fmtShort(d){
+    return d.toLocaleDateString('en-US',{month:'short',day:'numeric'});
+  }
+  function nights(a,b){ return Math.round((b-a)/86400000); }
+  function overlaps(aS,aE,bS,bE){ return aS < bE && bS < aE; }
+  function inSeason(d, year){
+    var s = new Date(year, SEASON.startMonth-1, SEASON.startDay);
+    var e = new Date(year, SEASON.endMonth-1, SEASON.endDay);
+    return d >= s && d <= e;
+  }
+
+  /* ---------------------------------------------------------------
+     NL PARSER (rule-based stand-in for a small language model —
+     see "How this works" panel in owner view)
+  --------------------------------------------------------------- */
+  function parseRequest(raw){
+    var text = raw.toLowerCase();
+    var out = { lengthFt:null, amp:null, rigType:null, hookup:null, start:null, end:null, longTermHint:false, raw:raw };
+
+    var mLen = text.match(/(\d{2,3})\s*(?:'|ft\.?|foot|feet)\b/);
+    if(mLen) out.lengthFt = parseInt(mLen[1],10);
+
+    var mAmp = text.match(/\b(30|50)\s*(?:-?\s*amp|a\b)/);
+    if(mAmp) out.amp = parseInt(mAmp[1],10);
+
+    var rigPatterns = [
+      [/fifth[\s-]?wheel|5th[\s-]?wheel/, 'Fifth wheel'],
+      [/toy\s?hauler/, 'Toy hauler'],
+      [/travel\s?trailer|\btrailer\b/, 'Travel trailer'],
+      [/pop[\s-]?up/, 'Pop-up camper'],
+      [/class\s?a|motorhome|motor\s?home|\brv\b|\bcoach\b/, 'Motorhome'],
+    ];
+    for(var i=0;i<rigPatterns.length;i++){
+      if(rigPatterns[i][0].test(text)){ out.rigType = rigPatterns[i][1]; break; }
+    }
+
+    if(/full\s?hook[\s-]?up/.test(text)) out.hookup = 'full';
+    else if(/water\s?and\s?electric|w\/?e\b/.test(text)) out.hookup = 'partial';
+
+    if(/\bmonth(ly)?\b|\bseasonal\b|year[\s-]?round|\ball\s+season\b/.test(text)) out.longTermHint = true;
+
+    // date extraction: find "Month Day" tokens, then a trailing connector + day (+ optional month)
+    var monthDayRe = /\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?\s+(\d{1,2})(?:st|nd|rd|th)?\b/gi;
+    var found = [];
+    var m;
+    while((m = monthDayRe.exec(text)) !== null){
+      found.push({ month: MONTHS[m[1].toLowerCase()], day: parseInt(m[2],10), index:m.index, len:m[0].length });
+    }
+
+    if(found.length >= 2){
+      out.start = { month:found[0].month, day:found[0].day };
+      out.end   = { month:found[1].month, day:found[1].day };
+    } else if(found.length === 1){
+      // look for "through/to/thru/until/-" + bare day number after the first match
+      var tail = text.slice(found[0].index + found[0].len);
+      var bareDay = tail.match(/^[^\d]{0,18}?(\d{1,2})(?:st|nd|rd|th)?\b/);
+      if(bareDay){
+        out.start = { month:found[0].month, day:found[0].day };
+        out.end   = { month:found[0].month, day:parseInt(bareDay[1],10) };
+      } else {
+        out.start = { month:found[0].month, day:found[0].day };
+      }
+    }
+
+    return out;
+  }
+
+  function resolveYear(monthDay){
+    // Pick the nearest upcoming occurrence of month/day relative to today.
+    var y = TODAY.getFullYear();
+    var candidate = new Date(y, monthDay.month, monthDay.day);
+    if(candidate < TODAY) candidate = new Date(y+1, monthDay.month, monthDay.day);
+    return candidate;
+  }
+
+  function buildDateRange(parsed){
+    if(!parsed.start) return null;
+    var start = resolveYear(parsed.start);
+    var end;
+    if(parsed.end){
+      end = new Date(start.getFullYear(), parsed.end.month, parsed.end.day);
+      if(end <= start) end = new Date(start.getFullYear()+1, parsed.end.month, parsed.end.day);
+    } else {
+      end = new Date(start); end.setDate(end.getDate()+1); // default one night if no end given
+    }
+    return { start:start, end:end };
+  }
+
+  /* ---------------------------------------------------------------
+     MATCHING ENGINE
+  --------------------------------------------------------------- */
+  function findAvailability(parsed){
+    var range = buildDateRange(parsed);
+    if(!range){
+      return { ok:false, reason:'no-dates' };
+    }
+    var start = range.start, end = range.end;
+    var stayNights = Math.max(1, nights(start,end));
+    var isLongTerm = parsed.longTermHint || stayNights >= 28;
+
+    if(parsed.lengthFt && parsed.lengthFt > SITE_SPEC.maxLength){
+      return { ok:false, reason:'too-long', start:start, end:end, nights:stayNights };
+    }
+
+    var pool = isLongTerm ? SITES.filter(function(s){return s.yearRound;})
+                           : SITES.filter(function(s){return !s.yearRound;});
+
+    if(!isLongTerm){
+      var y1 = start.getFullYear(), y2 = end.getFullYear();
+      var seasonOk = inSeason(start,y1) && inSeason(end,y2) && (y1===y2 || (end.getMonth()===0 && end.getDate()===1));
+      // simpler + more forgiving: just check start and end both fall within that year's window
+      seasonOk = inSeason(start,y1) && inSeason(new Date(end - 86400000), y2);
+      if(!seasonOk){
+        return { ok:false, reason:'out-of-season', start:start, end:end, nights:stayNights };
+      }
+    }
+
+    var available = [];
+    pool.forEach(function(site){
+      var blocked = RES.some(function(r){
+        if(r.site !== site.id) return false;
+        if(r.status === 'declined') return false;
+        return overlaps(start,end,r.start,r.end);
+      });
+      if(!blocked) available.push(site.id);
+    });
+
+    return {
+      ok:true, isLongTerm:isLongTerm, start:start, end:end, nights:stayNights,
+      available:available, poolChecked: pool.map(function(s){return s.id;})
+    };
+  }
+
+  /* ---------------------------------------------------------------
+     CHAT UI — camper view
+  --------------------------------------------------------------- */
+  var chatEl, composerInput;
+  var msgSeq = 0;
+
+  function renderCamperShell(){
+    var el = document.getElementById('view-camper');
+    el.innerHTML =
+      '<div class="camper-grid">'+
+        '<div class="panel">'+
+          '<div class="panel-head">'+
+            '<div><h2>Ask about a site</h2><p>Tell the assistant your rig and dates — it checks real site rules, not just a calendar.</p></div>'+
+          '</div>'+
+          '<div class="chatlog" id="chatlog"></div>'+
+          '<div class="chips">'+
+            '<button class="chip" onclick="fillChip(this)">40’ travel trailer, 50 amp, full hookup, July 3 through the 10</button>'+
+            '<button class="chip" onclick="fillChip(this)">Fifth wheel, 32ft, Aug 14 to Aug 20, 30 amp</button>'+
+            '<button class="chip" onclick="fillChip(this)">Looking for a spot for the whole month of August</button>'+
+          '</div>'+
+          '<form class="composer" id="composer" onsubmit="return onSend(event)">'+
+            '<input id="composer-input" type="text" placeholder="e.g. 36’ fifth wheel, 50 amp, Sept 5–10" autocomplete="off">'+
+            '<button type="submit" class="btn btn-pine">Send</button>'+
+          '</form>'+
+        '</div>'+
+        '<div class="panel">'+
+          '<div class="panel-head"><div><h2>F1&ndash;F10 reference</h2><p>Pull-through row, all full hookup</p></div></div>'+
+          '<div class="sitegrid" id="sitegrid"></div>'+
+          '<div class="rulesnote"><strong>Good to know:</strong> Up to 50’, 30/50-amp service. Check-in 1&ndash;9pm, check-out noon. '+
+          'F6 and F9 are year-round sites, not part of nightly rotation. Park open roughly May 1&ndash;Nov 15, weather permitting. '+
+          'Park Wi-Fi runs through a third-party provider (wifinow.net), separate from the campground.</div>'+
+        '</div>'+
+      '</div>';
+    chatEl = document.getElementById('chatlog');
+    composerInput = document.getElementById('composer-input');
+    renderSiteGrid();
+  }
+
+  function renderSiteGrid(){
+    var grid = document.getElementById('sitegrid');
+    if(!grid) return;
+    grid.innerHTML = SITES.map(function(s){
+      return '<div class="sitecard">'+
+        '<div class="sc-top"><span class="sc-id">'+s.id+'</span>'+
+          (s.yearRound ? '<span class="badge badge-year">Year-round</span>' : '<span class="badge badge-pt">Pull-through</span>')+
+        '</div>'+
+        '<div class="sc-meta">Up to 50’ &middot; 30/50 amp &middot; Full hookup'+
+          (s.yearRound ? '<br>Reserved for a year-round resident' : '') +
+        '</div>'+
+      '</div>';
+    }).join('');
+  }
+
+  function addMsg(role, html){
+    var div = document.createElement('div');
+    div.className = 'msg ' + role;
+    div.innerHTML = html;
+    chatEl.appendChild(div);
+    chatEl.scrollTop = chatEl.scrollHeight;
+    return div;
+  }
+
+  function greet(){
+    addMsg('assistant',
+      '<p>Hi! I can check F1&ndash;F10 against your rig and dates. Try something like <em>"40’ trailer, 50 amp, full hookup, July 3 through the 10."</em></p>'+
+      '<p>Every request still goes to Joe to confirm &mdash; nothing books itself.</p>');
+  }
+
+  window.fillChip = function(btn){
+    composerInput.value = btn.textContent;
+    composerInput.focus();
+  };
+
+  window.onSend = function(ev){
+    ev.preventDefault();
+    var text = composerInput.value.trim();
+    if(!text) return false;
+    addMsg('user', escapeHtml(text));
+    composerInput.value = '';
+    setTimeout(function(){ respondTo(text); }, 260);
+    return false;
+  };
+
+  function escapeHtml(s){
+    var d = document.createElement('div'); d.textContent = s; return d.innerHTML;
+  }
+
+  function respondTo(text){
+    var parsed = parseRequest(text);
+    var result = findAvailability(parsed);
+
+    if(!result.ok && result.reason === 'no-dates'){
+      addMsg('assistant', '<p>I caught the rig details but not the dates. Could you give me a start and end, like <em>"July 3 through the 10"</em>?</p>');
+      return;
+    }
+    if(!result.ok && result.reason === 'too-long'){
+      addMsg('assistant', '<p>F1&ndash;F10 fit rigs up to 50’. A '+parsed.lengthFt+'’ unit will need a different part of the park &mdash; I\'ll flag this for Joe to point you to the right spot.</p>');
+      return;
+    }
+    if(!result.ok && result.reason === 'out-of-season'){
+      addMsg('assistant', '<p>'+fmtShort(result.start)+'&ndash;'+fmtShort(result.end)+' falls outside our usual season (about May 1&ndash;Nov 15). F6 and F9 are the only sites open year-round, and those are reserved for long-term residents. Want me to check a date inside the season instead?</p>');
+      return;
+    }
+
+    var rigBits = [];
+    if(parsed.rigType) rigBits.push(parsed.rigType);
+    if(parsed.lengthFt) rigBits.push(parsed.lengthFt+'’');
+    if(parsed.amp) rigBits.push(parsed.amp+'-amp');
+    var rigLine = rigBits.length ? rigBits.join(', ') : 'your rig';
+
+    if(result.available.length === 0){
+      var checked = result.poolChecked.join(', ');
+      addMsg('assistant',
+        '<p>I checked '+checked+' for '+fmtShort(result.start)+'&ndash;'+fmtShort(result.end)+
+        (result.isLongTerm ? ' (year-round sites only, since that’s a month-plus stay)' : '')+
+        ' and nothing’s open for those dates. Want me to try a different week, or pass this along to Joe directly?</p>');
+      return;
+    }
+
+    var html = '<p>Good news &mdash; for '+rigLine+', '+fmtShort(result.start)+'&ndash;'+fmtShort(result.end)+
+      ' ('+result.nights+' night'+(result.nights===1?'':'s')+'), these are open:</p>';
+    html += '<div class="resultcards">';
+    result.available.forEach(function(siteId){
+      html += '<div class="resultcard">'+
+        '<div><span class="site-id">'+siteId+'</span> <span class="meta">Full hookup &middot; 30/50 amp &middot; up to 50’</span></div>'+
+        '<button class="btn btn-amber" onclick="openRequestForm(this, \''+siteId+'\')">Request this site</button>'+
+      '</div>';
+    });
+    html += '</div>';
+    html += '<p style="margin-top:10px;font-size:0.82rem;">Requesting sends it to Joe to confirm &mdash; he’ll follow up to lock it in.</p>';
+
+    var bubble = addMsg('assistant', html);
+    bubble.dataset.site = JSON.stringify({parsed:parsed, result:{start:result.start, end:result.end, nights:result.nights}});
+  }
+
+  window.openRequestForm = function(btn, siteId){
+    var card = btn.closest('.resultcard');
+    var bubble = btn.closest('.msg');
+    var ctx = JSON.parse(bubble.dataset.site);
+    var p = ctx.parsed, r = ctx.result;
+    r.start = new Date(r.start); r.end = new Date(r.end); // JSON.stringify flattened these to strings
+
+    var existing = card.nextElementSibling;
+    if(existing && existing.classList && existing.classList.contains('reqform')){ existing.remove(); return; }
+
+    var form = document.createElement('div');
+    form.className = 'reqform';
+    form.innerHTML =
+      '<div class="row">'+
+        '<div><label>Name</label><input type="text" class="rf-name" placeholder="Your name"></div>'+
+        '<div><label>Phone or email</label><input type="text" class="rf-contact" placeholder="For Joe to confirm with"></div>'+
+      '</div>'+
+      '<div class="row">'+
+        '<div><label>Rig</label><input type="text" class="rf-rig" value="'+escapeHtml((p.rigType||'')+(p.lengthFt?(' '+p.lengthFt+'’'):''))+'"></div>'+
+        '<div><label>Amp service</label><input type="text" class="rf-amp" value="'+escapeHtml(p.amp? (p.amp+' amp') : (SITE_SPEC.amps.join('/')+' amp available'))+'"></div>'+
+      '</div>'+
+      '<div class="meta" style="font-size:0.8rem;color:var(--ink-soft);">Site '+siteId+' &middot; '+fmtDate(r.start)+' &ndash; '+fmtDate(r.end)+' ('+r.nights+' nights)</div>'+
+      '<div class="actions">'+
+        '<button type="button" class="btn btn-amber" onclick="submitRequest(this,\''+siteId+'\')">Send request to Joe</button>'+
+        '<button type="button" class="btn btn-ghost" onclick="this.closest(\'.reqform\').remove()">Cancel</button>'+
+      '</div>';
+    card.insertAdjacentElement('afterend', form);
+    form.dataset.ctx = bubble.dataset.site;
+  };
+
+  window.submitRequest = function(btn, siteId){
+    var form = btn.closest('.reqform');
+    var ctx = JSON.parse(form.dataset.ctx);
+    var r = ctx.result, p = ctx.parsed;
+    r.start = new Date(r.start); r.end = new Date(r.end); // JSON.stringify flattened these to strings
+    var name = form.querySelector('.rf-name').value.trim() || 'Guest (name not given)';
+    var contact = form.querySelector('.rf-contact').value.trim() || 'not provided';
+    var rig = form.querySelector('.rf-rig').value.trim() || (p.rigType || 'Rig details not specified');
+    var amp = form.querySelector('.rf-amp').value.trim();
+
+    PENDING_SEQ++;
+    RES.push({
+      id:'req'+PENDING_SEQ,
+      site:siteId,
+      start:new Date(r.start),
+      end:new Date(r.end),
+      guest:name,
+      contact:contact,
+      rig:rig + (amp ? (', '+amp) : ''),
+      status:'pending',
+      source:'chat',
+      createdAt:new Date().toISOString(),
+      originalText:p.raw
+    });
+    saveState();
+
+    form.remove();
+    addMsg('assistant', '<p>Request sent for <strong>'+siteId+'</strong>, '+fmtShort(r.start)+'&ndash;'+fmtShort(r.end)+
+      '. Joe will review it and reach out at '+escapeHtml(contact)+' to confirm. You\'ll see it marked confirmed once he approves it.</p>');
+    renderOwner();
+    toast('New request sent to Joe’s queue.');
+  };
+
+  /* ---------------------------------------------------------------
+     OWNER VIEW
+  --------------------------------------------------------------- */
+  function renderOwner(){
+    var el = document.getElementById('view-owner');
+    if(!el || el.hidden) { buildOwnerIfNeeded(); return; }
+    buildOwnerIfNeeded();
+  }
+
+  function buildOwnerIfNeeded(){
+    var el = document.getElementById('view-owner');
+    var pending = RES.filter(function(r){return r.status==='pending';}).sort(function(a,b){return a.start-b.start;});
+    var confirmed = RES.filter(function(r){return r.status==='confirmed';}).sort(function(a,b){return a.start-b.start;});
+    var declined = RES.filter(function(r){return r.status==='declined';});
+
+    var daysLeft = Math.max(0, Math.round((new Date(TODAY.getFullYear(), SEASON.endMonth-1, SEASON.endDay) - TODAY)/86400000));
+    var seasonLabel = daysLeft>0 ? (daysLeft+' days left in the season') : 'Season currently closed';
+
+    var html = '';
+    html += '<div class="ownerstats">'+
+      '<div class="stat"><div class="stat-n num">'+pending.length+'</div><div class="stat-l">Waiting on your approval</div></div>'+
+      '<div class="stat"><div class="stat-n num">'+confirmed.length+'</div><div class="stat-l">Confirmed bookings on file</div></div>'+
+      '<div class="stat"><div class="stat-n num">'+daysLeft+'</div><div class="stat-l">'+seasonLabel+'</div></div>'+
+    '</div>';
+
+    html += '<div class="reassure">'+
+      '<div>'+
+        '<strong>Nothing books itself.</strong>'+
+        '<span>Every chat request lands here first. You approve or decline each one &mdash; the assistant only checks what’s open, it never confirms a stay.</span>'+
+      '</div>'+
+    '</div>';
+
+    html += '<div class="panel" style="margin-bottom:16px;">'+
+      '<div class="panel-head"><div><h2>Pending requests</h2><p>From the chat assistant and awaiting your decision</p></div></div>'+
+      '<div class="queue" id="pending-queue" style="padding:14px 16px;">'+
+        (pending.length ? pending.map(renderPendingCard).join('') : '<div class="empty">No pending requests right now.</div>')+
+      '</div>'+
+    '</div>';
+
+    html += '<div class="panel">'+
+      '<div class="panel-head"><div><h2>Confirmed bookings</h2><p>F1&ndash;F10, upcoming first</p></div></div>'+
+      '<div class="tablewrap" style="padding:0 16px 16px;">'+
+        (confirmed.length ? renderLedgerTable(confirmed) : '<div class="empty">No confirmed bookings yet.</div>')+
+      '</div>'+
+    '</div>';
+
+    if(declined.length){
+      html += '<div class="panel" style="margin-top:16px;">'+
+        '<div class="panel-head"><div><h2>Declined</h2><p>Kept for reference</p></div></div>'+
+        '<div class="tablewrap" style="padding:0 16px 16px;">'+renderLedgerTable(declined)+'</div>'+
+      '</div>';
+    }
+
+    html += '<details class="how">'+
+      '<summary>How this works (for Joe &amp; Cliff)</summary>'+
+      '<div class="how-body">'+
+        '<div><strong>1. Understanding the request.</strong> A small language model reads the camper’s sentence and pulls out the rig length, amp service, hookup type, and dates. This demo uses a simplified stand-in for that step; a live version would use a fast model built for exactly this kind of parsing.</div>'+
+        '<div><strong>2. Checking the rules.</strong> That structured request is checked against F1&ndash;F10’s specs, the season dates, and which sites already have bookings &mdash; plain logic, no guessing.</div>'+
+        '<div><strong>3. Your approval.</strong> A match only creates a <em>pending</em> request. Nothing is confirmed, and no site is held, until you approve it here.</div>'+
+        '<div><strong>What a real version would add:</strong> a shared database instead of this browser’s local storage, real text/email confirmations to the camper, and the rest of the site list beyond F1&ndash;F10.</div>'+
+      '</div>'+
+    '</details>';
+
+    el.innerHTML = html;
+  }
+
+  function renderPendingCard(r){
+    var n = nights(r.start,r.end);
+    return '<div class="reqcard" data-id="'+r.id+'">'+
+      '<div class="reqcard-top">'+
+        '<div class="reqcard-site"><span class="site-id">'+r.site+'</span><strong>'+escapeHtml(r.guest)+'</strong></div>'+
+        '<div class="reqcard-when">'+fmtDate(r.start)+' &ndash; '+fmtDate(r.end)+' &middot; '+n+' night'+(n===1?'':'s')+'</div>'+
+      '</div>'+
+      '<div class="reqcard-detail">'+
+        '<dl class="dl">'+
+          '<dt>Rig</dt><dd>'+escapeHtml(r.rig||'&mdash;')+'</dd>'+
+          '<dt>Contact</dt><dd>'+escapeHtml(r.contact||'&mdash;')+'</dd>'+
+          (r.originalText ? ('<dt>Their message</dt><dd style="color:var(--ink-soft);font-style:italic;">“'+escapeHtml(r.originalText)+'”</dd>') : '')+
+        '</dl>'+
+      '</div>'+
+      '<div class="reqcard-actions">'+
+        '<button class="btn btn-pine" onclick="approveReq(\''+r.id+'\')">Approve</button>'+
+        '<button class="btn btn-ghost" onclick="toggleDecline(\''+r.id+'\')">Decline</button>'+
+      '</div>'+
+      '<div class="declinebox" id="decline-'+r.id+'" hidden>'+
+        '<input type="text" placeholder="Reason (optional, kept for your records)" id="decline-reason-'+r.id+'">'+
+        '<button class="btn btn-rust" onclick="confirmDecline(\''+r.id+'\')">Confirm decline</button>'+
+      '</div>'+
+    '</div>';
+  }
+
+  function renderLedgerTable(list){
+    var rows = list.map(function(r){
+      var n = nights(r.start,r.end);
+      var statusHtml = r.status==='confirmed'
+        ? '<span class="status-pill status-confirmed">Confirmed</span>'
+        : '<span class="status-pill status-declined">Declined</span>';
+      return '<tr>'+
+        '<td><span class="site-id" style="font-family:var(--font-mono);font-weight:700;">'+r.site+'</span></td>'+
+        '<td>'+escapeHtml(r.guest)+'</td>'+
+        '<td class="num">'+fmtShort(r.start)+' &ndash; '+fmtShort(r.end)+'</td>'+
+        '<td class="num">'+n+'</td>'+
+        '<td>'+escapeHtml(r.rig||'&mdash;')+'</td>'+
+        '<td>'+statusHtml+'</td>'+
+      '</tr>';
+    }).join('');
+    return '<table class="ledger"><thead><tr><th>Site</th><th>Guest</th><th>Dates</th><th>Nights</th><th>Rig</th><th>Status</th></tr></thead><tbody>'+rows+'</tbody></table>';
+  }
+
+  window.approveReq = function(id){
+    var r = RES.find(function(x){return x.id===id;});
+    if(!r) return;
+    r.status = 'confirmed';
+    saveState();
+    buildOwnerIfNeeded();
+    toast(r.site+' confirmed for '+escapeHtml(r.guest)+'.');
+  };
+
+  window.toggleDecline = function(id){
+    var box = document.getElementById('decline-'+id);
+    if(box) box.hidden = !box.hidden;
+  };
+
+  window.confirmDecline = function(id){
+    var r = RES.find(function(x){return x.id===id;});
+    if(!r) return;
+    var reasonEl = document.getElementById('decline-reason-'+id);
+    r.status = 'declined';
+    r.declineReason = reasonEl ? reasonEl.value.trim() : '';
+    saveState();
+    buildOwnerIfNeeded();
+    toast('Request declined.');
+  };
+
+  /* ---------------------------------------------------------------
+     ROLE SWITCH / TOAST / BOOT
+  --------------------------------------------------------------- */
+  window.setRole = function(role){
+    var camperView = document.getElementById('view-camper');
+    var ownerView = document.getElementById('view-owner');
+    var bC = document.getElementById('btn-role-camper');
+    var bO = document.getElementById('btn-role-owner');
+    if(role==='camper'){
+      camperView.hidden = false; ownerView.hidden = true;
+      bC.classList.add('active'); bO.classList.remove('active');
+    } else {
+      camperView.hidden = true; ownerView.hidden = false;
+      bO.classList.add('active'); bC.classList.remove('active');
+      buildOwnerIfNeeded();
+    }
+  };
+
+  var toastTimer;
+  function toast(text){
+    var t = document.getElementById('toast');
+    t.textContent = text;
+    t.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function(){ t.classList.remove('show'); }, 2600);
+  }
+
+  function boot(){
+    loadState();
+    renderCamperShell();
+    greet();
+    buildOwnerIfNeeded();
+  }
+
+  if(document.readyState==='loading'){
+    document.addEventListener('DOMContentLoaded', boot);
+  } else {
+    boot();
+  }
+})();
+</script>
+</body>
+</html>
